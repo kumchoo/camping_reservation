@@ -46,18 +46,37 @@ def main(ctx: click.Context, config_path: str | None) -> None:
 @main.command("dry-run")
 @click.option("--date", "target_date", default=None, help="YYYY-MM-DD")
 @click.option("--headless/--no-headless", default=None, help="설정 덮어쓰기")
+@click.option(
+    "--manual-captcha",
+    is_flag=True,
+    default=False,
+    help="캡차 OCR 건너뛰고 사람이 입력할 때까지 대기",
+)
 @click.pass_context
-def dry_run_cmd(ctx: click.Context, target_date: str | None, headless: bool | None) -> None:
-    """사이트 오픈·방화벽 감지·가용성 힌트. 제출하지 않음."""
+def dry_run_cmd(
+    ctx: click.Context,
+    target_date: str | None,
+    headless: bool | None,
+    manual_captcha: bool,
+) -> None:
+    """사이트 오픈·로그인·날짜·캡차(보조)·가용성 힌트. 제출하지 않음."""
     cfg = load_config(ctx.obj.get("config_path"))
     if headless is not None:
         cfg.headless = headless
 
     console_info("모드: dry-run")
+    if manual_captcha:
+        console_info("캡차: 수동 입력 모드 (--manual-captcha)")
     exit_code = 0
     try:
         with launch_browser(cfg) as (_pw, _b, _c, page):
-            result = safe_run(page, cfg, mode="dry-run", target_date=target_date)
+            result = safe_run(
+                page,
+                cfg,
+                mode="dry-run",
+                target_date=target_date,
+                manual_captcha=manual_captcha,
+            )
             console_info(result.message)
     except FirewallBlockedError as e:
         console_error(str(e))
@@ -71,8 +90,19 @@ def dry_run_cmd(ctx: click.Context, target_date: str | None, headless: bool | No
 @main.command("book-now")
 @click.option("--date", "target_date", required=False, default=None, help="YYYY-MM-DD (필수 권장)")
 @click.option("--headless/--no-headless", default=None)
+@click.option(
+    "--manual-captcha",
+    is_flag=True,
+    default=False,
+    help="캡차 OCR 건너뛰고 사람이 입력할 때까지 대기",
+)
 @click.pass_context
-def book_now_cmd(ctx: click.Context, target_date: str | None, headless: bool | None) -> None:
+def book_now_cmd(
+    ctx: click.Context,
+    target_date: str | None,
+    headless: bool | None,
+    manual_captcha: bool,
+) -> None:
     """즉시 예약 시도 (결제 직전 중단)."""
     cfg = load_config(ctx.obj.get("config_path"))
     if headless is not None:
@@ -84,10 +114,18 @@ def book_now_cmd(ctx: click.Context, target_date: str | None, headless: bool | N
 
     console_info("모드: book-now")
     console_warn("결제는 자동화하지 않습니다. 성공 시 3시간 내 직접 결제하세요.")
+    if manual_captcha:
+        console_info("캡차: 수동 입력 모드 (--manual-captcha)")
     exit_code = 0
     try:
         with launch_browser(cfg) as (_pw, _b, _c, page):
-            result = safe_run(page, cfg, mode="book-now", target_date=date)
+            result = safe_run(
+                page,
+                cfg,
+                mode="book-now",
+                target_date=date,
+                manual_captcha=manual_captcha,
+            )
             console_info(result.message)
             if not result.success:
                 exit_code = 1
@@ -109,12 +147,19 @@ def book_now_cmd(ctx: click.Context, target_date: str | None, headless: bool | N
 )
 @click.option("--date", "target_date", default=None, help="예약 희망일 YYYY-MM-DD")
 @click.option("--headless/--no-headless", default=None)
+@click.option(
+    "--manual-captcha",
+    is_flag=True,
+    default=False,
+    help="캡차 OCR 건너뛰고 사람이 입력할 때까지 대기",
+)
 @click.pass_context
 def watch_cmd(
     ctx: click.Context,
     at_iso: str | None,
     target_date: str | None,
     headless: bool | None,
+    manual_captcha: bool,
 ) -> None:
     """다음 9일 11:00 KST(또는 --at)까지 대기 후 예약 시도."""
     cfg = load_config(ctx.obj.get("config_path"))
@@ -134,11 +179,11 @@ def watch_cmd(
     console_info(f"오픈 예정: {format_kst(open_at)}")
     console_info(f"로그인 워밍: {format_kst(warm_dt)} (약 {cfg.warm_login_seconds_before}초 전)")
     console_warn("집 PC·차단되지 않은 네트워크에서 실행하세요. 결제는 수동입니다.")
+    if manual_captcha:
+        console_info("캡차: 수동 입력 모드 (--manual-captcha)")
 
     date = target_date or cfg.target_date
-    # 날짜 미지정 시 오픈 대상 익월 1일을 힌트로만 안내
     if not date:
-        # 9일 오픈 → 보통 다음 달 예약
         y, m = open_at.year, open_at.month
         if m == 12:
             y, m = y + 1, 1
@@ -152,7 +197,6 @@ def watch_cmd(
 
     exit_code = 0
     try:
-        # 워밍 시각까지 대기
         if now_kst() < warm_dt:
             console_info("워밍 시각까지 대기 중...")
             wait_until(warm_dt)
@@ -171,14 +215,18 @@ def watch_cmd(
                 wait_until(open_at)
 
             console_info("오픈 — 예약 시도")
-            # 오픈 직후 새로고침
             page.reload(wait_until="domcontentloaded")
             page.wait_for_timeout(200)
-            result = safe_run(page, cfg, mode="book-now", target_date=date)
+            result = safe_run(
+                page,
+                cfg,
+                mode="book-now",
+                target_date=date,
+                manual_captcha=manual_captcha,
+            )
             console_info(result.message)
             if not result.success:
                 exit_code = 1
-            # 사용자가 결제할 수 있도록 잠시 유지
             console_info("브라우저를 60초간 유지합니다. 결제·확인을 진행하세요.")
             page.wait_for_timeout(60_000)
     except FirewallBlockedError as e:

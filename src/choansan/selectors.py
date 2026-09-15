@@ -1,69 +1,74 @@
 """
-PLACEHOLDER 셀렉터 — 문화인(moonhwain) 예약 UI 전형 패턴 기반.
+실측 DOM 셀렉터 (초안산캠핑장 / 문화인 moonhwain).
 
-실제 DOM은 dry-run 스크린샷 / DevTools 로 확인 후 SELECTOR_NOTES.md 지침에 따라
-이 파일의 값을 교체하세요. 아래 값은 "추정"이며 동작 보장을 하지 않습니다.
+Base: https://nowonsc.moonhwain.kr:447/rsvc/rsv_srm.html?b_id=nowonsc
+(ignore_https_errors=True)
+
+실측으로 확인된 항목은 CONFIRMED, 아직 미확인은 UNKNOWN 으로 표기.
 """
 
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------
-# 로그인 (PLACEHOLDER)
-# 문화인 공통: 아이디/비밀번호 input, 로그인 버튼
+# 로그인 (CONFIRMED: 링크 텍스트 / 로그아웃 검증)
 # ---------------------------------------------------------------------------
 LOGIN = {
-    # 로그인 폼이 별도 페이지/모달일 수 있음
+    # CONFIRMED: 상단 "로그인" 링크
+    "login_link": (
+        'a:has-text("로그인"), '
+        'a[href*="login"], '
+        'button:has-text("로그인")'
+    ),
+    # CONFIRMED 패턴: 회원 로그인 폼 — 아이디/비밀번호 (세부 name 은 사이트마다 다를 수 있음)
     "user_id": (
         'input[name="user_id"], '
         'input[name="userid"], '
         'input[name="mb_id"], '
+        'input[name="m_id"], '
         'input#user_id, '
         'input#userid, '
-        'input[type="text"][placeholder*="아이디"]'
+        'input#mb_id, '
+        'input[type="text"][placeholder*="아이디"], '
+        'form input[type="text"]'
     ),
     "password": (
         'input[name="password"], '
         'input[name="user_pw"], '
         'input[name="mb_password"], '
+        'input[name="m_pw"], '
         'input#password, '
         'input#user_pw, '
         'input[type="password"]'
     ),
+    # CONFIRMED: 로그인 제출 버튼 텍스트
     "submit": (
+        'button:has-text("로그인"), '
+        'input[type="submit"][value*="로그인"], '
+        'a:has-text("로그인"), '
         'button[type="submit"], '
-        'input[type="submit"], '
-        'a.btn_login, '
-        'button.btn_login, '
-        'input.btn_login'
+        'input[type="submit"]'
     ),
-    # 로그인 링크/버튼 (미로그인 상태 상단)
-    "login_link": (
-        'a[href*="login"], '
-        'a.login, '
-        'button.login, '
-        'a:has-text("로그인")'
+    # CONFIRMED: 로그인 성공 시 "로그아웃" 노출
+    "logout_marker": (
+        'a:has-text("로그아웃"), '
+        'button:has-text("로그아웃"), '
+        'text=로그아웃'
     ),
 }
 
 # ---------------------------------------------------------------------------
-# 캘린더 / 날짜 (PLACEHOLDER)
-# rsvc/rsv_srm.html 계열: 달력 셀에 날짜·상태 클래스가 붙는 경우가 많음
+# 캘린더 / 날짜 (CONFIRMED: div.tdCal#YYYYMMDD)
 # ---------------------------------------------------------------------------
 CALENDAR = {
-    # 날짜 셀 — data-date / onclick / td.day 등 미확인
-    "day_cell": (
-        'td.day, '
-        'td[data-date], '
-        'a.day, '
-        'div.calendar td, '
-        'table.calendar td'
-    ),
-    # 특정 날짜 클릭용 포맷 힌트 (코드에서 format 후 사용)
-    # UNKNOWN: 실제 attribute 이름 미확인 → booking.py 에서 여러 전략 시도
-    "day_by_date_attr": '[data-date="{date}"]',
-    "day_by_title": 'td[title*="{date}"], a[title*="{date}"]',
+    # CONFIRMED: 날짜 셀 id = YYYYMMDD (예: #20260916), class tdCal
+    "day_by_id": "#{yyyymmdd}",
+    "day_by_tdcal_id": "div.tdCal#{yyyymmdd}",
+    "day_cell": "div.tdCal, td.tdCal, td.day, td[data-date]",
+    # CONFIRMED: 예약가능 일은 title 예약가능 / 빨간 배경
+    "available_title": "예약가능",
     "available_marker_class": "able, available, possible, on, possible_day",
     "disabled_marker_class": "disabled, impossible, close, soldout, off",
+    # UNKNOWN: 월 이동 버튼 (실측 미확인)
     "next_month": (
         'a.next, button.next, '
         'a.btn_next, button.btn_next, '
@@ -74,13 +79,68 @@ CALENDAR = {
         'a.btn_prev, button.btn_prev, '
         'a:has-text("이전"), button:has-text("이전")'
     ),
+    # 하위 호환 (구 PLACEHOLDER)
+    "day_by_date_attr": '[data-date="{date}"]',
+    "day_by_title": 'td[title*="{date}"], a[title*="{date}"], div.tdCal[title*="{date}"]',
 }
 
 # ---------------------------------------------------------------------------
-# 사이트(자리) 선택 (PLACEHOLDER)
+# 캡차 / 인증단계 (CONFIRMED)
+# ---------------------------------------------------------------------------
+CAPTCHA = {
+    # CONFIRMED: #kcaptcha_image_front (또는 id 에 kcaptcha 포함)
+    "image": (
+        "#kcaptcha_image_front, "
+        'img#kcaptcha_image_front, '
+        'img[id*="kcaptcha"], '
+        'img[src*="kcaptcha"]'
+    ),
+    # CONFIRMED: placeholder "문자를 입력해주세요"
+    "input": (
+        'input[placeholder*="문자를 입력"], '
+        'input[placeholder*="문자"], '
+        'input[name*="captcha"], '
+        'input[name*="kcaptcha"], '
+        'input#captcha, '
+        'input.captcha'
+    ),
+    # CONFIRMED: "다음단계" → chkCap_front()
+    "next_button": (
+        'button:has-text("다음단계"), '
+        'a:has-text("다음단계"), '
+        'input[value*="다음단계"], '
+        'button[onclick*="chkCap_front"], '
+        'a[onclick*="chkCap_front"], '
+        'input[onclick*="chkCap_front"]'
+    ),
+    # 단계 마커
+    "step_marker": 'text=인증단계, text=인증',
+}
+
+# ---------------------------------------------------------------------------
+# 구역선택 (CONFIRMED: 캐빈/테라스/파크/피크닉 라벨)
+# ---------------------------------------------------------------------------
+ZONE = {
+    # CONFIRMED 라벨 (카운트 포함될 수 있음)
+    "labels": {
+        "C": "캐빈캠핑빌리지",
+        "T": "테라스캠핑빌리지",
+        "P": "파크캠핑빌리지",
+        "H": "힐링캠핑빌리지",  # UNKNOWN: 기본 우선순위에서 제외 (C→T→P)
+        "PICNIC": "피크닉장",
+    },
+    # 구역 버튼/클릭 가능 요소 (텍스트 매칭 보조)
+    "zone_item": (
+        'button, a, label, div, span, li, td'
+    ),
+    # 우선순위 기본: C → T → P (H 제외)
+    "default_priority": ["C", "T", "P"],
+}
+
+# ---------------------------------------------------------------------------
+# 사이트(자리) 선택 — 구역 이후 개별 자리 (부분 UNKNOWN)
 # ---------------------------------------------------------------------------
 SITE = {
-    # 자리 버튼/링크 — 텍스트에 P1, H1 등이 포함되는 패턴
     "site_item": (
         'a.site, button.site, '
         'div.site, li.site, '
@@ -88,8 +148,7 @@ SITE = {
         '[data-site], '
         '[class*="site"]'
     ),
-    # 텍스트 매칭용 (Playwright get_by_text / locator filter)
-    "site_text_pattern": "{code}",  # 예: P1
+    "site_text_pattern": "{code}",
     "available_only": (
         '.able, .available, .possible, '
         '[data-status="Y"], [data-available="true"]'
@@ -102,9 +161,10 @@ SITE = {
 }
 
 # ---------------------------------------------------------------------------
-# 예약 확인 / 동의 / 제출 (PLACEHOLDER) — 결제 직전에서 STOP
+# 예약 확인 / 동의 / 제출 — 결제 직전에서 STOP
 # ---------------------------------------------------------------------------
 RESERVATION = {
+    # UNKNOWN: 박수/전기/동의 세부 name 미확인
     "nights_select": (
         'select[name*="night"], '
         'select[name*="term"], '
@@ -128,7 +188,7 @@ RESERVATION = {
         'button:has-text("신청"), '
         'button:has-text("확인")'
     ),
-    # 결제 페이지/버튼 — 감지되면 즉시 중단
+    # 결제 페이지/버튼 — 감지되면 즉시 중단 (클릭 금지)
     "payment_marker": (
         'button:has-text("결제"), '
         'a:has-text("결제"), '
@@ -144,21 +204,18 @@ RESERVATION = {
 }
 
 # ---------------------------------------------------------------------------
-# 공통 / 알림 팝업 (PLACEHOLDER)
+# 공통 / 알림 팝업
 # ---------------------------------------------------------------------------
 COMMON = {
     "alert_ok": 'button:has-text("확인"), .btn_confirm, .swal2-confirm',
-    "popup_close": 'button.close, a.close, .btn_close',
-    "loading": '.loading, .spinner, #loading',
+    "popup_close": "button.close, a.close, .btn_close",
+    "loading": ".loading, .spinner, #loading",
 }
 
-# 공개적으로 알려진 문화인 경로 힌트 (API 아님, HTML 경로만)
-# UNKNOWN: 실제 AJAX endpoint / 파라미터는 사이트마다 다름 — 추측 API 호출 금지
 KNOWN_PATH_HINTS = {
     "reservation_page": "/rsvc/rsv_srm.html",
     "building_id_param": "b_id=nowonsc",
     "firewall_error": "/syscon/error.html?moonIpsPK=chk",
-    # 아래는 미확인 — 문서화만
-    "login_path_unknown": True,
+    "login_path_unknown": True,  # 로그인 폼 URL 세부 경로 UNKNOWN
     "ajax_availability_unknown": True,
 }

@@ -9,7 +9,8 @@
 
 > ⚠️ **개인 사용·사이트 이용약관**  
 > 자동 조회/클릭 도구는 사이트 약관·운영 정책과 충돌할 수 있습니다. 본인 책임 하에, 과도한 요청 없이 사용하세요.  
-> 본 프로젝트는 교육·개인 편의 목적이며 예약 성공을 보장하지 않습니다.
+> 본 프로젝트는 교육·개인 편의 목적이며 예약 성공을 보장하지 않습니다.  
+> **캡차는 안티봇 장치**입니다. OCR은 보조일 뿐 성공을 보장하지 않으며, 외부 캡차 솔빙 API/농장은 사용하지 않습니다.
 
 ## 비즈니스 규칙 (참고)
 
@@ -18,7 +19,7 @@
 | 오픈 | **익월** 예약이 매월 **9일 11:00 Asia/Seoul** FCFS |
 | 결제 | 예약 후 **3시간 이내** 미결제 시 자동 취소 |
 | 한도 | **1계정 = 1사이트/일**, 최대 **2박** |
-| 구역 | H1–H19 Healing, P1–P26 Park, T1–T5 Terrace, C1–C3 Cabin |
+| 구역 | 캐빈(C) / 테라스(T) / 파크(P) — 기본 우선순위 **C → T → P** (H 제외) |
 | 캐빈 | C구역은 **자격/이용 조건**이 있을 수 있음 → 설정에 넣으면 경고 |
 | 휴장 | **화요일**, **설날·추석 당일** (공휴일 자동 판별은 미구현 — 수동 확인) |
 
@@ -26,11 +27,12 @@
 
 - Python **3.11+**
 - Chromium (Playwright가 설치)
+- (선택) `ddddocr` — 캡차 숫자 OCR 보조
 
 ## 설치
 
 ```bash
-cd choansan-camping-booking
+cd choansan-camping-booking   # 또는 클론한 camping_reservation
 python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
@@ -48,22 +50,68 @@ cp .env.example .env
 
 `config.yaml` 과 `.env` 는 gitignore 됩니다. 자격 증명을 저장소에 넣지 마세요.
 
+## 로그인·캡차 자동화 사용법
+
+### `.env` 설정
+
+```bash
+cp .env.example .env
+```
+
+`.env` 내용 예:
+
+```
+CHOANSAN_USER_ID=회원아이디
+CHOANSAN_PASSWORD=비밀번호
+```
+
+- 로그인 흐름: 상단 **로그인** 링크 → 아이디/비밀번호 입력 → **로그인** 버튼  
+- 성공 판별: 페이지에 **로그아웃** 텍스트가 보이면 로그인된 것으로 간주합니다.  
+- 자격증명이 없으면 로그인을 건너뜁니다 (조회만 가능한 범위).
+
+### 예약 플로우 (결제 전 중단)
+
+1. 방화벽 검사  
+2. 로그인 (`.env`)  
+3. 날짜 클릭 — `div.tdCal#YYYYMMDD` / `#YYYYMMDD` (예: `#20260916`)  
+4. **인증단계(캡차)** — 이미지 저장 → (기본) 로컬 OCR → 입력 → **다음단계**  
+5. **구역선택** — 캐빈/테라스/파크 라벨을 우선순위대로 (count>0 이면 클릭), 실패 시 C1·T1·P1…  
+6. **결제 UI가 보이면 즉시 중단** (결제 버튼 클릭 안 함)
+
+### 캡차 OCR (한계)
+
+- 모듈: `src/choansan/captcha.py`  
+- 기본: `ddddocr` 로 로컬 인식 후 입력. 캡차 이미지는 `artifacts/captcha_*.png` 에 저장.  
+- 최대 3회 재시도. 실패 시 이미지를 클릭해 새로고침을 시도한 뒤, **수동 입력 대기**로 전환.  
+- OCR은 **자주 실패**할 수 있습니다. 캡차는 안티봇이며 성공을 보장하지 않습니다.  
+- 외부 유료/제3자 캡차 솔빙 API는 **사용하지 않습니다** (개인 사용·약관 준수).
+
+수동만 쓰려면:
+
+```bash
+python -m choansan book-now --date 2026-09-16 --manual-captcha
+python -m choansan dry-run --date 2026-09-16 --manual-captcha --no-headless
+```
+
+`--manual-captcha` 이면 OCR을 건너뛰고, 브라우저에서 직접 문자를 넣고 **다음단계**를 누를 때까지 기다립니다.
+
 ## 실행
 
 프로젝트 루트에서 `PYTHONPATH=src` 를 쓰거나, 패키지 설치 후 실행합니다.
 
 ```bash
 export PYTHONPATH=src   # Linux/macOS
+# Windows PowerShell: $env:PYTHONPATH="src"
 # 또는: pip install -e .
 ```
 
 ### 1) dry-run (제출 없음)
 
-사이트 오픈 → 방화벽 감지 → (자격 있으면) 로그인 시도 → 가용 힌트 출력.
+사이트 오픈 → 방화벽 → 로그인 → 날짜 → 캡차(보조) → 가용 힌트.
 
 ```bash
 python -m choansan dry-run
-python -m choansan dry-run --date 2026-10-10
+python -m choansan dry-run --date 2026-09-16
 python -m choansan --config config.yaml dry-run --no-headless
 ```
 
@@ -72,7 +120,7 @@ python -m choansan --config config.yaml dry-run --no-headless
 ### 2) book-now (즉시 시도, 결제 전 중단)
 
 ```bash
-python -m choansan book-now --date 2026-10-10
+python -m choansan book-now --date 2026-09-16
 ```
 
 ### 3) watch (9일 11:00 KST 대기)
@@ -101,15 +149,17 @@ https://nowonsc.moonhwain.kr:447/rsvc/rsv_srm.html?b_id=nowonsc
 - HTTPS **포트 447**
 - Playwright에서 `ignore_https_errors=True` 사용
 
-## 셀렉터 (중요)
+## 셀렉터
 
-클라우드 IP에서는 실제 DOM을 확인할 수 없는 경우가 많아,  
-`src/choansan/selectors.py` 는 **PLACEHOLDER** 입니다.
+실측 반영: `src/choansan/selectors.py`  
+자세한 튜닝은 `SELECTOR_NOTES.md` 참고.
 
-1. 집 PC에서 `dry-run --no-headless` 실행  
-2. DevTools로 로그인·달력·사이트 버튼 선택자 확인  
-3. `SELECTOR_NOTES.md` 지침에 따라 `selectors.py` 수정  
-4. 실패 시 `artifacts/` 스크린샷 참고
+| 단계 | 실측 셀렉터 |
+|------|-------------|
+| 날짜 | `div.tdCal#YYYYMMDD` / `#YYYYMMDD`, title 예약가능 |
+| 캡차 | `#kcaptcha_image_front`, placeholder `문자를 입력해주세요`, 버튼 `다음단계` |
+| 구역 | `캐빈캠핑빌리지`, `테라스캠핑빌리지`, `파크캠핑빌리지`, `피크닉장` |
+| 로그인 성공 | `로그아웃` 텍스트 |
 
 ## 디렉터리
 
@@ -130,6 +180,7 @@ choansan-camping-booking/
     browser.py
     firewall.py
     selectors.py
+    captcha.py
     booking.py
     notify.py
   artifacts/
@@ -145,6 +196,7 @@ choansan-camping-booking/
 
 ## 면책
 
-- 예약·결제 성공을 보장하지 않습니다.
+- 예약·결제·캡차 통과를 보장하지 않습니다.
 - 사이트 UI 변경 시 셀렉터 업데이트가 필요합니다.
 - 무단 다량 요청, 타인 계정 사용, 약관 위반 용도로 사용하지 마세요.
+- 결제는 절대 자동화하지 마세요.

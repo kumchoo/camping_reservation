@@ -1,4 +1,4 @@
-"""예약 플로우 — PLACEHOLDER 셀렉터 사용, 결제 직전 STOP.
+"""예약 플로우 — 로그인 → 날짜 → 캡차 → 구역 → 결제 직전 STOP.
 
 비즈니스 규칙 (코드/로그 참고):
 - 익월 예약: 매월 9일 11:00 Asia/Seoul FCFS
@@ -6,10 +6,12 @@
 - 1계정 = 1사이트/일, 최대 2박
 - 화요일·설날/추석 당일 휴장
 - 캐빈(C*)은 자격 조건 경고
+- 구역 우선순위 기본: C → T → P (H 제외)
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,6 +21,7 @@ from playwright.sync_api import Page, TimeoutError as PlaywrightTimeout
 
 from choansan import selectors as sel
 from choansan.browser import open_and_check_firewall, screenshot_failure
+from choansan.captcha import captcha_step_visible, solve_captcha
 from choansan.config import AppConfig, ZONE_INFO
 from choansan.firewall import FirewallBlockedError
 from choansan.notify import console_info, console_warn, notify_payment_needed
@@ -40,10 +43,6 @@ def _log_step(step: str) -> None:
     console_info(f"[단계] {step}")
 
 
-def _zone_prefix(code: str) -> str:
-    return code[0].upper() if code else "?"
-
-
 def warn_business_rules(cfg: AppConfig, target_date: str | None) -> None:
     cabins = cfg.warn_cabin_sites()
     if cabins:
@@ -63,19 +62,37 @@ def warn_business_rules(cfg: AppConfig, target_date: str | None) -> None:
             console_warn(f"날짜 형식 확인: {target_date} (YYYY-MM-DD)")
 
 
+def _is_logged_in(page: Page) -> bool:
+    try:
+        loc = page.locator(sel.LOGIN["logout_marker"]).first
+        if loc.count() > 0 and loc.is_visible():
+            return True
+    except Exception:
+        pass
+    try:
+        if page.get_by_text("로그아웃", exact=False).count() > 0:
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def try_login(page: Page, cfg: AppConfig, artifacts: Path) -> bool:
-    """자격증명이 있으면 로그인 시도. PLACEHOLDER 셀렉터."""
+    """자격증명이 있으면 로그인. 성공 시 '로그아웃' 텍스트로 검증."""
     if not cfg.credentials.available:
         console_info("자격증명 없음 (.env) — 로그인 건너뜀")
         return False
 
+    if _is_logged_in(page):
+        console_info("이미 로그인된 상태 (로그아웃 확인)")
+        return True
+
     _log_step("로그인 시도")
     try:
-        # 로그인 링크가 있으면 클릭
         link = page.locator(sel.LOGIN["login_link"]).first
         if link.count() > 0 and link.is_visible():
             link.click(timeout=5_000)
-            page.wait_for_timeout(800)
+            page.wait_for_timeout(1_000)
 
         uid = page.locator(sel.LOGIN["user_id"]).first
         pw = page.locator(sel.LOGIN["password"]).first
@@ -86,69 +103,160 @@ def try_login(page: Page, cfg: AppConfig, artifacts: Path) -> bool:
 
         uid.fill(cfg.credentials.user_id or "")
         pw.fill(cfg.credentials.password or "")
-        submit = page.locator(sel.LOGIN["submit"]).first
-        if submit.count() > 0:
-            submit.click()
-        else:
+
+        # 제출: "로그인" 버튼 (링크 클릭 후 폼의 로그인)
+        submitted = False
+        submit_candidates = page.locator(sel.LOGIN["submit"])
+        n = min(submit_candidates.count(), 8)
+        for i in range(n):
+            btn = submit_candidates.nth(i)
+            try:
+                if not btn.is_visible():
+                    continue
+                label = (btn.inner_text() or btn.get_attribute("value") or "").strip()
+                # 상단 네비 '로그인' 과 구분 — 폼 근처 submit 우선
+                if "로그인" in label or btn.get_attribute("type") == "submit":
+                    btn.click(timeout=5_000)
+                    submitted = True
+                    break
+            except Exception:
+                continue
+        if not submitted:
             pw.press("Enter")
-        page.wait_for_timeout(1_500)
-        console_info("로그인 제출 완료 (성공 여부는 화면으로 확인 — 셀렉터 PLACEHOLDER)")
-        return True
+
+        page.wait_for_timeout(2_000)
+
+        if _is_logged_in(page):
+            console_info("로그인 성공 (로그아웃 확인)")
+            return True
+
+        console_warn("로그인 제출 후 '로그아웃'을 확인하지 못함 — 화면/자격증명 확인")
+        screenshot_failure(page, artifacts, "login_verify_failed")
+        return False
     except Exception as e:
         console_warn(f"로그인 중 오류: {e}")
         screenshot_failure(page, artifacts, "login_error")
         return False
 
 
+def _to_yyyymmdd(date_str: str) -> str:
+    """YYYY-MM-DD 또는 YYYYMMDD → YYYYMMDD."""
+    s = date_str.strip().replace("-", "")
+    if len(s) != 8 or not s.isdigit():
+        raise ValueError(f"날짜 형식 오류: {date_str} (YYYY-MM-DD 필요)")
+    return s
+
+
 def _try_select_date(page: Page, date_str: str) -> bool:
-    """날짜 셀 클릭 — 여러 PLACEHOLDER 전략."""
+    """날짜 셀 클릭 — CONFIRMED: #YYYYMMDD / div.tdCal#YYYYMMDD."""
     _log_step(f"날짜 선택 시도: {date_str}")
+    try:
+        ymd = _to_yyyymmdd(date_str)
+    except ValueError as e:
+        console_warn(str(e))
+        return False
+
     strategies = [
+        sel.CALENDAR["day_by_tdcal_id"].format(yyyymmdd=ymd),
+        sel.CALENDAR["day_by_id"].format(yyyymmdd=ymd),
+        f"#{ymd}",
+        f"div.tdCal#{ymd}",
         sel.CALENDAR["day_by_date_attr"].format(date=date_str),
-        sel.CALENDAR["day_by_date_attr"].format(date=date_str.replace("-", "")),
-        sel.CALENDAR["day_by_title"].format(date=date_str),
-        f'text="{date_str}"',
-        f'text="{int(date_str.split("-")[2])}"',  # 일(day) 숫자만 — 모호할 수 있음
+        sel.CALENDAR["day_by_date_attr"].format(date=ymd),
     ]
     for css in strategies:
         try:
             loc = page.locator(css).first
             if loc.count() > 0 and loc.is_visible():
-                loc.click(timeout=3_000)
-                page.wait_for_timeout(500)
-                console_info(f"날짜 클릭 후보 성공: {css}")
-                return True
+                # 예약가능 여부 힌트
+                title = (loc.get_attribute("title") or "") + " " + (loc.inner_text() or "")
+                if "예약가능" in title or True:
+                    loc.click(timeout=3_000)
+                    page.wait_for_timeout(600)
+                    console_info(f"날짜 클릭 성공: {css}")
+                    return True
         except Exception:
             continue
-    # 일반 day_cell 순회 (텍스트 매칭)
-    day_num = str(int(date_str.split("-")[2]))
+
+    console_warn(
+        f"날짜 #{ymd} / div.tdCal#{ymd} 클릭 실패 — "
+        "해당 일이 달력에 없거나 예약불가다 가능"
+    )
+    return False
+
+
+def _zone_order_from_preferred(preferred: list[str]) -> list[str]:
+    """preferred_sites 에서 구역 접두사 순서 추출 (중복 제거). 기본 C→T→P."""
+    order: list[str] = []
+    for code in preferred:
+        if not code:
+            continue
+        z = code[0].upper()
+        if z in ("C", "T", "P", "H") and z not in order:
+            order.append(z)
+    if not order:
+        order = list(sel.ZONE["default_priority"])
+    return order
+
+
+def _parse_count_from_text(text: str) -> int | None:
+    """'캐빈캠핑빌리지 (3)' / '캐빈캠핑빌리지 3' 등에서 숫자 추출."""
+    m = re.search(r"[\(（]\s*(\d+)\s*[\)）]", text)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"(\d+)\s*개", text)
+    if m:
+        return int(m.group(1))
+    # 라벨 뒤 단독 숫자
+    m = re.search(r"(?:빌리지|피크닉장)\s*[:：]?\s*(\d+)", text)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _try_click_zone_label(page: Page, label: str) -> bool:
+    """구역 라벨 텍스트로 클릭. count==0 이면 스킵."""
     try:
-        cells = page.locator(sel.CALENDAR["day_cell"])
-        n = min(cells.count(), 42)
+        # Playwright text 검색
+        candidates = page.get_by_text(label, exact=False)
+        n = min(candidates.count(), 12)
         for i in range(n):
-            cell = cells.nth(i)
+            el = candidates.nth(i)
             try:
-                t = (cell.inner_text() or "").strip()
-                if t == day_num or t.startswith(day_num):
-                    cell.click(timeout=2_000)
-                    console_info(f"day_cell 텍스트 매칭으로 클릭: '{t}'")
-                    return True
+                if not el.is_visible():
+                    continue
+                text = (el.inner_text() or "").strip()
+                # 부모에 카운트가 있을 수 있음
+                try:
+                    parent_text = (el.locator("xpath=..").inner_text() or text).strip()
+                except Exception:
+                    parent_text = text
+                combined = text if label in text else parent_text
+                count = _parse_count_from_text(combined)
+                if count is not None and count <= 0:
+                    console_info(f"구역 '{label}' count={count} — 스킵")
+                    continue
+                el.click(timeout=3_000)
+                page.wait_for_timeout(500)
+                console_info(
+                    f"구역 선택: {label}"
+                    + (f" (count≈{count})" if count is not None else "")
+                )
+                return True
             except Exception:
                 continue
     except Exception as e:
-        console_warn(f"캘린더 탐색 실패: {e}")
+        console_warn(f"구역 라벨 '{label}' 탐색 실패: {e}")
     return False
 
 
 def _try_pick_site(page: Page, preferred: list[str]) -> str | None:
-    """우선순위 목록에서 가용 사이트 선택."""
-    _log_step(f"사이트 선택 시도 (우선순위: {preferred})")
+    """우선순위 목록에서 가용 사이트(자리) 선택."""
+    _log_step(f"사이트 코드 선택 시도 (우선순위: {preferred})")
     for code in preferred:
-        # 텍스트 기반
         try:
             loc = page.get_by_text(code, exact=True)
             if loc.count() > 0:
-                # 비활성 여부 대략 확인
                 el = loc.first
                 cls = (el.get_attribute("class") or "").lower()
                 disabled_markers = ["disabled", "impossible", "close", "soldout", "off"]
@@ -161,7 +269,6 @@ def _try_pick_site(page: Page, preferred: list[str]) -> str | None:
                 return code
         except Exception:
             pass
-        # CSS data-site
         try:
             loc = page.locator(f'[data-site="{code}"], [data-site-code="{code}"]').first
             if loc.count() > 0 and loc.is_visible():
@@ -174,17 +281,47 @@ def _try_pick_site(page: Page, preferred: list[str]) -> str | None:
     return None
 
 
+def _try_pick_zone_then_site(page: Page, preferred: list[str]) -> str | None:
+    """구역선택(캐빈/테라스/파크) → 개별 사이트 코드."""
+    _log_step("구역선택 시도")
+    labels: dict[str, str] = sel.ZONE["labels"]  # type: ignore[assignment]
+    order = _zone_order_from_preferred(preferred)
+
+    zone_clicked = False
+    for z in order:
+        label = labels.get(z)
+        if not label:
+            continue
+        if _try_click_zone_label(page, label):
+            zone_clicked = True
+            break
+
+    if not zone_clicked:
+        console_warn("구역 라벨 클릭 실패 — 사이트 코드(C1/T1/P1…)로 직접 시도")
+
+    # 구역 클릭 후에도 개별 자리 선택이 필요할 수 있음
+    site = _try_pick_site(page, preferred)
+    if site:
+        return site
+    if zone_clicked:
+        # 구역만 고르고 자리 UI가 다른 형태일 수 있음
+        return f"ZONE:{order[0] if order else '?'}"
+    return None
+
+
 def _scrape_availability_hints(page: Page) -> list[str]:
     """가용 텍스트 힌트 수집 (dry-run용, best-effort)."""
     hints: list[str] = []
     try:
         body = page.inner_text("body")
-        for code_prefix in ("P", "H", "T", "C"):
+        for label in ("캐빈캠핑빌리지", "테라스캠핑빌리지", "파크캠핑빌리지", "피크닉장"):
+            if label in body:
+                hints.append(label)
+        for code_prefix in ("C", "T", "P", "H"):
             for i in range(1, 30):
                 code = f"{code_prefix}{i}"
                 if code in body:
                     hints.append(code)
-        # 중복 제거 순서 유지
         seen: set[str] = set()
         out: list[str] = []
         for h in hints:
@@ -210,7 +347,6 @@ def _advance_reservation_until_payment(page: Page, cfg: AppConfig) -> None:
     """확인/동의/다음 단계 — 결제 UI 보이면 중단."""
     _log_step("예약 확인 단계 진행 (결제 전 중단)")
 
-    # 박수
     try:
         ns = page.locator(sel.RESERVATION["nights_select"]).first
         if ns.count() > 0:
@@ -219,7 +355,6 @@ def _advance_reservation_until_payment(page: Page, cfg: AppConfig) -> None:
     except Exception as e:
         console_warn(f"숙박일수 선택 스킵: {e}")
 
-    # 전기
     if cfg.electricity:
         try:
             cb = page.locator(sel.RESERVATION["electricity_checkbox"]).first
@@ -229,7 +364,6 @@ def _advance_reservation_until_payment(page: Page, cfg: AppConfig) -> None:
         except Exception as e:
             console_warn(f"전기 옵션 스킵: {e}")
 
-    # 약관 동의
     try:
         agree = page.locator(sel.RESERVATION["agree_checkbox"]).first
         if agree.count() > 0 and not agree.is_checked():
@@ -242,7 +376,6 @@ def _advance_reservation_until_payment(page: Page, cfg: AppConfig) -> None:
         _log_step("결제 UI 감지 — 여기서 중단")
         return
 
-    # 예약/확인 버튼 (결제 버튼은 누르지 않음)
     for key in ("confirm_button", "next_step"):
         if _stop_if_payment_visible(page):
             _log_step("결제 UI 감지 — 클릭 중단")
@@ -255,6 +388,9 @@ def _advance_reservation_until_payment(page: Page, cfg: AppConfig) -> None:
             if "결제" in label:
                 console_warn(f"결제 버튼 '{label}' — 클릭하지 않음")
                 return
+            # 캡차 다음단계와 혼동 방지: 이미 구역 이후라면 OK
+            if "다음단계" in label and captcha_step_visible(page):
+                continue
             btn.click(timeout=5_000)
             page.wait_for_timeout(800)
             console_info(f"클릭: {key} ('{label}')")
@@ -267,8 +403,19 @@ def _advance_reservation_until_payment(page: Page, cfg: AppConfig) -> None:
         _log_step("stop_before_payment=True — 결제 단계 진입하지 않음")
 
 
-def run_dry_run(page: Page, cfg: AppConfig, target_date: str | None = None) -> BookingResult:
-    """URL 오픈, 방화벽 감지, 선택적 로그인, 가용성 힌트 출력. 제출 없음."""
+def _handle_captcha(page: Page, artifacts: Path, *, manual_captcha: bool) -> bool:
+    _log_step("캡차(인증단계) 처리")
+    return solve_captcha(page, artifacts, manual=manual_captcha)
+
+
+def run_dry_run(
+    page: Page,
+    cfg: AppConfig,
+    target_date: str | None = None,
+    *,
+    manual_captcha: bool = False,
+) -> BookingResult:
+    """방화벽 → 로그인 → 날짜 → 캡차 → 구역 힌트. 제출/결제 없음."""
     artifacts = cfg.artifacts_path()
     date = target_date or cfg.target_date
     warn_business_rules(cfg, date)
@@ -283,15 +430,21 @@ def run_dry_run(page: Page, cfg: AppConfig, target_date: str | None = None) -> B
     if date:
         ok = _try_select_date(page, date)
         if not ok:
-            console_warn("날짜 셀 클릭 실패 — SELECTOR_NOTES.md 참고하여 셀렉터 수정 필요")
+            console_warn("날짜 셀 클릭 실패 — #YYYYMMDD / div.tdCal#YYYYMMDD 확인")
         else:
             screenshot_failure(page, artifacts, "dry_run_date")
+            if captcha_step_visible(page):
+                cap_ok = _handle_captcha(page, artifacts, manual_captcha=manual_captcha)
+                if not cap_ok:
+                    console_warn("캡차 미통과 (dry-run)")
+                else:
+                    screenshot_failure(page, artifacts, "dry_run_after_captcha")
 
     hints = _scrape_availability_hints(page)
     if hints:
-        console_info(f"페이지 본문에서 발견된 사이트 코드 힌트: {', '.join(hints)}")
+        console_info(f"페이지 본문에서 발견된 구역/사이트 힌트: {', '.join(hints)}")
     else:
-        console_info("가용 사이트 텍스트 힌트를 추출하지 못함 (정상일 수 있음 — DOM 구조 확인)")
+        console_info("가용 힌트를 추출하지 못함 (정상일 수 있음 — DOM 확인)")
 
     console_info("dry-run 완료 — 예약 제출/결제 없음")
     return BookingResult(
@@ -308,10 +461,11 @@ def run_book(
     target_date: str | None = None,
     *,
     dry_run: bool = False,
+    manual_captcha: bool = False,
 ) -> BookingResult:
     """실제 예약 시도 (결제 직전 중단). dry_run=True 면 run_dry_run."""
     if dry_run:
-        return run_dry_run(page, cfg, target_date)
+        return run_dry_run(page, cfg, target_date, manual_captcha=manual_captcha)
 
     artifacts = cfg.artifacts_path()
     date = target_date or cfg.target_date
@@ -321,19 +475,27 @@ def run_book(
     warn_business_rules(cfg, date)
     open_and_check_firewall(page, cfg.base_url, artifacts)
 
-    try_login(page, cfg, artifacts)
+    if not try_login(page, cfg, artifacts):
+        console_warn("로그인 미확인 상태로 계속 진행 (예약이 막힐 수 있음)")
 
     if not _try_select_date(page, date):
         screenshot_failure(page, artifacts, "date_select_failed")
-        return BookingResult(success=False, message="날짜 선택 실패 (셀렉터 튜닝 필요)", dates=date)
+        return BookingResult(success=False, message="날짜 선택 실패", dates=date)
+
+    if captcha_step_visible(page):
+        if not _handle_captcha(page, artifacts, manual_captcha=manual_captcha):
+            screenshot_failure(page, artifacts, "captcha_failed")
+            return BookingResult(success=False, message="캡차(인증단계) 실패", dates=date)
+    else:
+        console_info("캡차 단계 없음 — 바로 구역선택으로 진행")
 
     end = datetime.strptime(date, "%Y-%m-%d") + timedelta(days=cfg.nights)
     dates_label = f"{date} ~ {end.strftime('%Y-%m-%d')} ({cfg.nights}박)"
 
-    site = _try_pick_site(page, cfg.preferred_sites)
+    site = _try_pick_zone_then_site(page, cfg.preferred_sites)
     if not site:
         screenshot_failure(page, artifacts, "site_select_failed")
-        return BookingResult(success=False, message="사이트 선택 실패", dates=dates_label)
+        return BookingResult(success=False, message="구역/사이트 선택 실패", dates=dates_label)
 
     _advance_reservation_until_payment(page, cfg)
     screenshot_failure(page, artifacts, "before_payment_stop")
@@ -342,7 +504,7 @@ def run_book(
         artifacts,
         site=site,
         dates=dates_label,
-        extra="셀렉터가 PLACEHOLDER 인 경우 실제 예약이 완료되지 않았을 수 있습니다. 브라우저 화면을 확인하세요.",
+        extra="결제는 자동화하지 않습니다. 브라우저에서 직접 결제하세요.",
     )
     return BookingResult(
         success=True,
@@ -359,13 +521,14 @@ def safe_run(
     *,
     mode: str,
     target_date: str | None = None,
+    manual_captcha: bool = False,
 ) -> BookingResult:
     """예외 시 스크린샷 후 재발생. FirewallBlockedError 는 그대로."""
     artifacts = cfg.artifacts_path()
     try:
         if mode == "dry-run":
-            return run_dry_run(page, cfg, target_date)
-        return run_book(page, cfg, target_date, dry_run=False)
+            return run_dry_run(page, cfg, target_date, manual_captcha=manual_captcha)
+        return run_book(page, cfg, target_date, dry_run=False, manual_captcha=manual_captcha)
     except FirewallBlockedError:
         raise
     except Exception:
