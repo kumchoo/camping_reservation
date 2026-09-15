@@ -13,10 +13,10 @@
 
 ## 실측 플로우 (CONFIRMED)
 
-1. **로그인** — 링크 `로그인` → 회원 로그인 폼(아이디+비밀번호+로그인) → 성공 시 `로그아웃`
-2. **날짜** — `div.tdCal#YYYYMMDD` 또는 `#YYYYMMDD` (예: `#20260916`). 예약가능 일은 title `예약가능` / 빨간 배경
-3. **인증단계(캡차)** — 이미지 `#kcaptcha_image_front` (또는 id에 kcaptcha), input placeholder `문자를 입력해주세요`, 버튼 `다음단계` (`chkCap_front()`)
-4. **구역선택** — `캐빈캠핑빌리지`, `테라스캠핑빌리지`, `파크캠핑빌리지`, `피크닉장` (+ 잔여 카운트)
+1. **로그인** — 링크 `로그인` → `#m_email` + `#m_pwdTmp` → hidden `input[name=m_pwd]` 동기화 → `button.b1[onclick*="loginChk"]` / `loginChk()` → 성공 시 `로그아웃`
+2. **날짜** — `div.tdCal[id="YYYYMMDD"]` (예: `div.tdCal[id="20260916"]`). **`#YYYYMMDD` CSS 는 무효**(id가 숫자 시작). 예약가능 일은 title `예약가능` / 빨간 배경
+3. **인증단계(캡차)** — `h2.tit.pc_v` 클릭(인증단계) → `#kcaptcha_image_front` 로드 대기 → OCR 투표 → `#writekey_mc` JS 주입 → `chkCap_front()`. 새로고침은 img.src 쿼리(창닫기 클릭 금지)
+4. **구역선택** — `캐빈캠핑빌리지`, `테라스캠핑빌리지`, `파크캠핑빌리지`, `피크닉장` (+ 잔여 카운트). `(0)` 스킵, 우선순위 C→T→P
 5. **결제 전 STOP** — 결제 버튼/영역은 클릭하지 않음
 
 우선순위 기본: **C → T → P** (H 제외)
@@ -41,12 +41,15 @@ python -m choansan dry-run --no-headless --date YYYY-MM-DD --manual-captcha
 | 구분 | 실측 | 키 |
 |------|------|-----|
 | 로그인 링크 | `로그인` 텍스트 | `LOGIN["login_link"]` |
+| 아이디/비번 | `#m_email`, `#m_pwdTmp`, `input[name=m_pwd]` | `LOGIN["user_id"]`, `password_visible`, `password_hidden` |
+| 로그인 제출 | `button.b1[onclick*="loginChk"]` / `loginChk()` | `LOGIN["submit"]` |
 | 로그인 성공 | `로그아웃` | `LOGIN["logout_marker"]` |
-| 날짜 | `#YYYYMMDD`, `div.tdCal#YYYYMMDD` | `CALENDAR["day_by_id"]`, `day_by_tdcal_id` |
+| 날짜 | `div.tdCal[id="YYYYMMDD"]` | `CALENDAR["day_by_attr"]` |
+| 인증단계 헤더 | `h2.tit.pc_v` + 인증단계 | `CAPTCHA["auth_header"]` |
 | 캡차 이미지 | `#kcaptcha_image_front` | `CAPTCHA["image"]` |
-| 캡차 입력 | placeholder 문자 입력 | `CAPTCHA["input"]` |
-| 다음단계 | `다음단계` / `chkCap_front` | `CAPTCHA["next_button"]` |
-| 구역 | 캐빈/테라스/파크… | `ZONE["labels"]` |
+| 캡차 입력 | `#writekey_mc` (JS inject) | `CAPTCHA["input"]` |
+| 다음단계 | `chkCap_front()` | `CAPTCHA["chk_cap_js"]` |
+| 구역 | 캐빈/테라스/파크… C→T→P | `ZONE["labels"]` |
 | 결제 감지 | `결제` 문구 | `RESERVATION["payment_marker"]` |
 
 UNKNOWN (세부 name/속성 미확인): 로그인 input `name`, 박수/전기/동의 select·checkbox, 개별 자리 data-site.
@@ -58,8 +61,9 @@ UNKNOWN (세부 name/속성 미확인): 로그인 input `name`, 박수/전기/�
 `YYYY-MM-DD` → `YYYYMMDD` id로 클릭합니다.
 
 ```js
-document.querySelector('#20260916')
-document.querySelector('div.tdCal#20260916')
+// #20260916 는 CSS 로 무효(숫자로 시작하는 id). 속성 선택자 또는 getElementById 사용
+document.querySelector('div.tdCal[id="20260916"]')
+document.getElementById('20260916')
 ```
 
 예약가능: `title` 에 `예약가능` 또는 빨간 배경.
@@ -68,9 +72,12 @@ document.querySelector('div.tdCal#20260916')
 
 ## 4. 캡차
 
-- 이미지 클릭 시 새로고침되는 경우가 많음 → 재시도 시 클릭
-- OCR(`ddddocr`)은 **보장 없음** → 실패 시 `--manual-captcha` 또는 자동 수동 폴백
-- 제3자 캡차 API 사용 금지
+- 패널: `h2.tit.pc_v`(인증단계) 클릭(force) 후 `#writekey_mc` 조상 display/visibility 강제
+- 이미지 로드: `#kcaptcha_image_front` naturalWidth / bounding box 대기
+- OCR: 전처리 변형 + `ddddocr` 투표(3–5 영숫자 선호). **보장 없음** → 실패 시 `--manual-captcha` 또는 자동 수동 폴백
+- 입력: `#writekey_mc` JS inject (Playwright fill 이 안 될 수 있음) → `chkCap_front()`
+- 새로고침: `img.src` 쿼리 파라미터 갱신. **창닫기/`pop_close` 이미지 클릭 금지**
+- 제3자 캡차 API 사용 금지 (개인 사용)
 
 ---
 

@@ -10,7 +10,7 @@ Base: https://nowonsc.moonhwain.kr:447/rsvc/rsv_srm.html?b_id=nowonsc
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------
-# 로그인 (CONFIRMED: 링크 텍스트 / 로그아웃 검증)
+# 로그인 (CONFIRMED: #m_email / #m_pwdTmp → hidden m_pwd → loginChk)
 # ---------------------------------------------------------------------------
 LOGIN = {
     # CONFIRMED: 상단 "로그인" 링크
@@ -19,8 +19,10 @@ LOGIN = {
         'a[href*="login"], '
         'button:has-text("로그인")'
     ),
-    # CONFIRMED 패턴: 회원 로그인 폼 — 아이디/비밀번호 (세부 name 은 사이트마다 다를 수 있음)
-    "user_id": (
+    # CONFIRMED: 회원 로그인 — 아이디(#m_email), 비밀번호 표시란(#m_pwdTmp)
+    "user_id": "#m_email",
+    "user_id_fallbacks": (
+        'input[name="m_email"], '
         'input[name="user_id"], '
         'input[name="userid"], '
         'input[name="mb_id"], '
@@ -31,7 +33,10 @@ LOGIN = {
         'input[type="text"][placeholder*="아이디"], '
         'form input[type="text"]'
     ),
-    "password": (
+    "password_visible": "#m_pwdTmp",
+    "password_hidden": 'input[name="m_pwd"]',
+    "password": "#m_pwdTmp",
+    "password_fallbacks": (
         'input[name="password"], '
         'input[name="user_pw"], '
         'input[name="mb_password"], '
@@ -40,14 +45,18 @@ LOGIN = {
         'input#user_pw, '
         'input[type="password"]'
     ),
-    # CONFIRMED: 로그인 제출 버튼 텍스트
-    "submit": (
+    # CONFIRMED: loginChk() / button.b1[onclick*="loginChk"]
+    "submit": 'button.b1[onclick*="loginChk"]',
+    "submit_fallbacks": (
+        'button[onclick*="loginChk"], '
+        'a[onclick*="loginChk"], '
+        'input[onclick*="loginChk"], '
         'button:has-text("로그인"), '
         'input[type="submit"][value*="로그인"], '
-        'a:has-text("로그인"), '
         'button[type="submit"], '
         'input[type="submit"]'
     ),
+    "login_chk_js": "loginChk",
     # CONFIRMED: 로그인 성공 시 "로그아웃" 노출
     "logout_marker": (
         'a:has-text("로그아웃"), '
@@ -57,10 +66,14 @@ LOGIN = {
 }
 
 # ---------------------------------------------------------------------------
-# 캘린더 / 날짜 (CONFIRMED: div.tdCal#YYYYMMDD)
+# 캘린더 / 날짜 (CONFIRMED: div.tdCal[id="YYYYMMDD"])
 # ---------------------------------------------------------------------------
 CALENDAR = {
-    # CONFIRMED: 날짜 셀 id = YYYYMMDD (예: #20260916), class tdCal
+    # CONFIRMED: id 가 숫자로 시작하므로 #YYYYMMDD CSS 는 무효.
+    # 반드시 속성 선택자 사용: div.tdCal[id="YYYYMMDD"]
+    "day_by_attr": 'div.tdCal[id="{yyyymmdd}"]',
+    "day_by_id_attr": '[id="{yyyymmdd}"]',
+    # 하위 호환(잘못된 CSS — 사용하지 말 것; booking 에서 속성 선택자 우선)
     "day_by_id": "#{yyyymmdd}",
     "day_by_tdcal_id": "div.tdCal#{yyyymmdd}",
     "day_cell": "div.tdCal, td.tdCal, td.day, td[data-date]",
@@ -79,7 +92,6 @@ CALENDAR = {
         'a.btn_prev, button.btn_prev, '
         'a:has-text("이전"), button:has-text("이전")'
     ),
-    # 하위 호환 (구 PLACEHOLDER)
     "day_by_date_attr": '[data-date="{date}"]',
     "day_by_title": 'td[title*="{date}"], a[title*="{date}"], div.tdCal[title*="{date}"]',
 }
@@ -88,21 +100,25 @@ CALENDAR = {
 # 캡차 / 인증단계 (CONFIRMED)
 # ---------------------------------------------------------------------------
 CAPTCHA = {
-    # CONFIRMED: #kcaptcha_image_front (또는 id 에 kcaptcha 포함)
-    "image": (
-        "#kcaptcha_image_front, "
+    # CONFIRMED: 인증단계 헤더 — 날짜 선택 후 열기
+    "auth_header": "h2.tit.pc_v",
+    "auth_header_text": "인증단계",
+    # CONFIRMED: #kcaptcha_image_front
+    "image": "#kcaptcha_image_front",
+    "image_fallbacks": (
         'img#kcaptcha_image_front, '
         'img[id*="kcaptcha"], '
         'img[src*="kcaptcha"]'
     ),
-    # CONFIRMED: placeholder "문자를 입력해주세요"
-    "input": (
+    # CONFIRMED: #writekey_mc (Playwright fill 대신 JS inject 필요 시 있음)
+    "input": "#writekey_mc",
+    "input_fallbacks": (
+        'input#writekey_mc, '
+        'input[name="writekey_mc"], '
         'input[placeholder*="문자를 입력"], '
         'input[placeholder*="문자"], '
         'input[name*="captcha"], '
-        'input[name*="kcaptcha"], '
-        'input#captcha, '
-        'input.captcha'
+        'input[name*="kcaptcha"]'
     ),
     # CONFIRMED: "다음단계" → chkCap_front()
     "next_button": (
@@ -113,7 +129,9 @@ CAPTCHA = {
         'a[onclick*="chkCap_front"], '
         'input[onclick*="chkCap_front"]'
     ),
-    # 단계 마커
+    "chk_cap_js": "chkCap_front",
+    # 닫기 이미지 — 캡차 새로고침 시 클릭하지 말 것
+    "close_image": 'img.pop_close_only_btn, img[src*="pop_close"], img[alt*="창닫기"]',
     "step_marker": 'text=인증단계, text=인증',
 }
 
@@ -121,7 +139,7 @@ CAPTCHA = {
 # 구역선택 (CONFIRMED: 캐빈/테라스/파크/피크닉 라벨)
 # ---------------------------------------------------------------------------
 ZONE = {
-    # CONFIRMED 라벨 (카운트 포함될 수 있음)
+    # CONFIRMED 라벨 (카운트 포함될 수 있음) — 예: 파크캠핑빌리지 (N)
     "labels": {
         "C": "캐빈캠핑빌리지",
         "T": "테라스캠핑빌리지",
@@ -129,11 +147,8 @@ ZONE = {
         "H": "힐링캠핑빌리지",  # UNKNOWN: 기본 우선순위에서 제외 (C→T→P)
         "PICNIC": "피크닉장",
     },
-    # 구역 버튼/클릭 가능 요소 (텍스트 매칭 보조)
-    "zone_item": (
-        'button, a, label, div, span, li, td'
-    ),
-    # 우선순위 기본: C → T → P (H 제외)
+    "zone_item": "button, a, label, div, span, li, td",
+    # 우선순위 기본: C → T → P (H 제외). count==0 이면 스킵
     "default_priority": ["C", "T", "P"],
 }
 
@@ -164,7 +179,6 @@ SITE = {
 # 예약 확인 / 동의 / 제출 — 결제 직전에서 STOP
 # ---------------------------------------------------------------------------
 RESERVATION = {
-    # UNKNOWN: 박수/전기/동의 세부 name 미확인
     "nights_select": (
         'select[name*="night"], '
         'select[name*="term"], '
@@ -216,6 +230,6 @@ KNOWN_PATH_HINTS = {
     "reservation_page": "/rsvc/rsv_srm.html",
     "building_id_param": "b_id=nowonsc",
     "firewall_error": "/syscon/error.html?moonIpsPK=chk",
-    "login_path_unknown": True,  # 로그인 폼 URL 세부 경로 UNKNOWN
+    "login_path_unknown": True,
     "ajax_availability_unknown": True,
 }

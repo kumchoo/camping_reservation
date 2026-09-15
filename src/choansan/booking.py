@@ -21,7 +21,11 @@ from playwright.sync_api import Page, TimeoutError as PlaywrightTimeout
 
 from choansan import selectors as sel
 from choansan.browser import open_and_check_firewall, screenshot_failure
-from choansan.captcha import captcha_step_visible, solve_captcha
+from choansan.captcha import (
+    captcha_step_visible,
+    prepare_captcha_panel,
+    solve_captcha,
+)
 from choansan.config import AppConfig, ZONE_INFO
 from choansan.firewall import FirewallBlockedError
 from choansan.notify import console_info, console_warn, notify_payment_needed
@@ -78,7 +82,11 @@ def _is_logged_in(page: Page) -> bool:
 
 
 def try_login(page: Page, cfg: AppConfig, artifacts: Path) -> bool:
-    """자격증명이 있으면 로그인. 성공 시 '로그아웃' 텍스트로 검증."""
+    """자격증명이 있으면 로그인.
+
+    CONFIRMED: #m_email, #m_pwdTmp → hidden input[name=m_pwd] 동기화 →
+    button.b1[onclick*="loginChk"] 또는 loginChk(). 성공 시 '로그아웃' 검증.
+    """
     if not cfg.credentials.available:
         console_info("자격증명 없음 (.env) — 로그인 건너뜀")
         return False
@@ -88,41 +96,114 @@ def try_login(page: Page, cfg: AppConfig, artifacts: Path) -> bool:
         return True
 
     _log_step("로그인 시도")
+    user = cfg.credentials.user_id or ""
+    password = cfg.credentials.password or ""
+
     try:
         link = page.locator(sel.LOGIN["login_link"]).first
         if link.count() > 0 and link.is_visible():
             link.click(timeout=5_000)
             page.wait_for_timeout(1_000)
 
+        # #m_email
         uid = page.locator(sel.LOGIN["user_id"]).first
-        pw = page.locator(sel.LOGIN["password"]).first
-        if uid.count() == 0 or pw.count() == 0:
-            console_warn("로그인 입력란을 찾지 못함 (셀렉터 튜닝 필요)")
+        if uid.count() == 0:
+            uid = page.locator(sel.LOGIN.get("user_id_fallbacks", "input[type='text']")).first
+        pw_vis = page.locator(sel.LOGIN.get("password_visible", "#m_pwdTmp")).first
+        if pw_vis.count() == 0:
+            pw_vis = page.locator(sel.LOGIN.get("password_fallbacks", "input[type='password']")).first
+
+        if uid.count() == 0 or pw_vis.count() == 0:
+            console_warn("로그인 입력란(#m_email / #m_pwdTmp)을 찾지 못함")
             screenshot_failure(page, artifacts, "login_fields_missing")
             return False
 
-        uid.fill(cfg.credentials.user_id or "")
-        pw.fill(cfg.credentials.password or "")
+        uid.click(timeout=3_000)
+        uid.fill("")
+        uid.fill(user)
 
-        # 제출: "로그인" 버튼 (링크 클릭 후 폼의 로그인)
+        pw_vis.click(timeout=3_000)
+        try:
+            pw_vis.fill("")
+            pw_vis.fill(password)
+        except Exception:
+            # 일부 환경에서 fill 실패 → JS
+            page.evaluate(
+                """(val) => {
+                  const el = document.querySelector('#m_pwdTmp');
+                  if (!el) return;
+                  el.value = val;
+                  el.dispatchEvent(new Event('input', { bubbles: true }));
+                  el.dispatchEvent(new Event('change', { bubbles: true }));
+                }""",
+                password,
+            )
+
+        # hidden input[name=m_pwd] 동기화
+        try:
+            page.evaluate(
+                """(val) => {
+                  const hidden = document.querySelector('input[name="m_pwd"]');
+                  const tmp = document.querySelector('#m_pwdTmp');
+                  const v = val || (tmp ? tmp.value : '');
+                  if (hidden) {
+                    hidden.value = v;
+                    hidden.dispatchEvent(new Event('input', { bubbles: true }));
+                    hidden.dispatchEvent(new Event('change', { bubbles: true }));
+                  }
+                  if (tmp && tmp.value !== v) {
+                    tmp.value = v;
+                  }
+                }""",
+                password,
+            )
+            console_info("m_pwd 히든 필드 동기화")
+        except Exception as e:
+            console_warn(f"m_pwd 동기화 스킵: {e}")
+
         submitted = False
-        submit_candidates = page.locator(sel.LOGIN["submit"])
-        n = min(submit_candidates.count(), 8)
-        for i in range(n):
-            btn = submit_candidates.nth(i)
+        # button.b1[onclick*="loginChk"]
+        try:
+            btn = page.locator(sel.LOGIN["submit"]).first
+            if btn.count() > 0 and btn.is_visible():
+                btn.click(timeout=5_000)
+                submitted = True
+                console_info("loginChk 버튼 클릭")
+        except Exception as e:
+            console_warn(f"loginChk 버튼 클릭 실패: {e}")
+
+        if not submitted:
             try:
-                if not btn.is_visible():
-                    continue
-                label = (btn.inner_text() or btn.get_attribute("value") or "").strip()
-                # 상단 네비 '로그인' 과 구분 — 폼 근처 submit 우선
-                if "로그인" in label or btn.get_attribute("type") == "submit":
-                    btn.click(timeout=5_000)
+                page.evaluate(
+                    """() => {
+                      if (typeof loginChk === 'function') {
+                        loginChk();
+                        return true;
+                      }
+                      return false;
+                    }"""
+                )
+                submitted = True
+                console_info("loginChk() JS 호출")
+            except Exception as e:
+                console_warn(f"loginChk() 실패: {e}")
+
+        if not submitted:
+            # 폴백 submit
+            submit_candidates = page.locator(sel.LOGIN.get("submit_fallbacks", 'button:has-text("로그인")'))
+            n = min(submit_candidates.count(), 8)
+            for i in range(n):
+                b = submit_candidates.nth(i)
+                try:
+                    if not b.is_visible():
+                        continue
+                    b.click(timeout=5_000)
                     submitted = True
                     break
-            except Exception:
-                continue
-        if not submitted:
-            pw.press("Enter")
+                except Exception:
+                    continue
+            if not submitted:
+                pw_vis.press("Enter")
 
         page.wait_for_timeout(2_000)
 
@@ -148,7 +229,10 @@ def _to_yyyymmdd(date_str: str) -> str:
 
 
 def _try_select_date(page: Page, date_str: str) -> bool:
-    """날짜 셀 클릭 — CONFIRMED: #YYYYMMDD / div.tdCal#YYYYMMDD."""
+    """날짜 셀 클릭 — CONFIRMED: div.tdCal[id="YYYYMMDD"].
+
+    #YYYYMMDD 는 id 가 숫자로 시작해 CSS 선택자로 무효 → 사용하지 않음.
+    """
     _log_step(f"날짜 선택 시도: {date_str}")
     try:
         ymd = _to_yyyymmdd(date_str)
@@ -157,10 +241,10 @@ def _try_select_date(page: Page, date_str: str) -> bool:
         return False
 
     strategies = [
-        sel.CALENDAR["day_by_tdcal_id"].format(yyyymmdd=ymd),
-        sel.CALENDAR["day_by_id"].format(yyyymmdd=ymd),
-        f"#{ymd}",
-        f"div.tdCal#{ymd}",
+        sel.CALENDAR["day_by_attr"].format(yyyymmdd=ymd),
+        sel.CALENDAR["day_by_id_attr"].format(yyyymmdd=ymd),
+        f'div.tdCal[id="{ymd}"]',
+        f'[id="{ymd}"]',
         sel.CALENDAR["day_by_date_attr"].format(date=date_str),
         sel.CALENDAR["day_by_date_attr"].format(date=ymd),
     ]
@@ -168,18 +252,34 @@ def _try_select_date(page: Page, date_str: str) -> bool:
         try:
             loc = page.locator(css).first
             if loc.count() > 0 and loc.is_visible():
-                # 예약가능 여부 힌트
-                title = (loc.get_attribute("title") or "") + " " + (loc.inner_text() or "")
-                if "예약가능" in title or True:
-                    loc.click(timeout=3_000)
-                    page.wait_for_timeout(600)
-                    console_info(f"날짜 클릭 성공: {css}")
-                    return True
+                loc.click(timeout=3_000)
+                page.wait_for_timeout(600)
+                console_info(f"날짜 클릭 성공: {css}")
+                return True
         except Exception:
             continue
 
+    # JS 폴백 (CSS 엔진 이슈 대비)
+    try:
+        clicked = page.evaluate(
+            """(ymd) => {
+              const el = document.querySelector('div.tdCal[id="' + ymd + '"]')
+                || document.getElementById(ymd);
+              if (!el) return false;
+              el.click();
+              return true;
+            }""",
+            ymd,
+        )
+        if clicked:
+            page.wait_for_timeout(600)
+            console_info(f"날짜 클릭 성공(JS getElementById): {ymd}")
+            return True
+    except Exception as e:
+        console_warn(f"날짜 JS 클릭 실패: {e}")
+
     console_warn(
-        f"날짜 #{ymd} / div.tdCal#{ymd} 클릭 실패 — "
+        f'date div.tdCal[id="{ymd}"] 클릭 실패 — '
         "해당 일이 달력에 없거나 예약불가다 가능"
     )
     return False
@@ -405,7 +505,8 @@ def _advance_reservation_until_payment(page: Page, cfg: AppConfig) -> None:
 
 def _handle_captcha(page: Page, artifacts: Path, *, manual_captcha: bool) -> bool:
     _log_step("캡차(인증단계) 처리")
-    return solve_captcha(page, artifacts, manual=manual_captcha)
+    prepare_captcha_panel(page)
+    return solve_captcha(page, artifacts, manual=manual_captcha, open_panel=False)
 
 
 def run_dry_run(
@@ -430,9 +531,11 @@ def run_dry_run(
     if date:
         ok = _try_select_date(page, date)
         if not ok:
-            console_warn("날짜 셀 클릭 실패 — #YYYYMMDD / div.tdCal#YYYYMMDD 확인")
+            console_warn('날짜 셀 클릭 실패 — div.tdCal[id="YYYYMMDD"] 확인')
         else:
             screenshot_failure(page, artifacts, "dry_run_date")
+            # 날짜 후 인증단계 패널을 열어 캡차 처리 (비가시 DOM 대비)
+            prepare_captcha_panel(page)
             if captcha_step_visible(page):
                 cap_ok = _handle_captcha(page, artifacts, manual_captcha=manual_captcha)
                 if not cap_ok:
@@ -482,6 +585,7 @@ def run_book(
         screenshot_failure(page, artifacts, "date_select_failed")
         return BookingResult(success=False, message="날짜 선택 실패", dates=date)
 
+    prepare_captcha_panel(page)
     if captcha_step_visible(page):
         if not _handle_captcha(page, artifacts, manual_captcha=manual_captcha):
             screenshot_failure(page, artifacts, "captcha_failed")

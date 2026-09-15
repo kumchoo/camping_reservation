@@ -65,7 +65,7 @@ CHOANSAN_USER_ID=회원아이디
 CHOANSAN_PASSWORD=비밀번호
 ```
 
-- 로그인 흐름: 상단 **로그인** 링크 → 아이디/비밀번호 입력 → **로그인** 버튼  
+- 로그인 흐름: 상단 **로그인** 링크 → `#m_email` / `#m_pwdTmp` 입력 → hidden `input[name=m_pwd]` 동기화 → `button.b1[onclick*="loginChk"]` 또는 `loginChk()`  
 - 성공 판별: 페이지에 **로그아웃** 텍스트가 보이면 로그인된 것으로 간주합니다.  
 - 자격증명이 없으면 로그인을 건너뜁니다 (조회만 가능한 범위).
 
@@ -73,17 +73,18 @@ CHOANSAN_PASSWORD=비밀번호
 
 1. 방화벽 검사  
 2. 로그인 (`.env`)  
-3. 날짜 클릭 — `div.tdCal#YYYYMMDD` / `#YYYYMMDD` (예: `#20260916`)  
-4. **인증단계(캡차)** — 이미지 저장 → (기본) 로컬 OCR → 입력 → **다음단계**  
-5. **구역선택** — 캐빈/테라스/파크 라벨을 우선순위대로 (count>0 이면 클릭), 실패 시 C1·T1·P1…  
+3. 날짜 클릭 — `div.tdCal[id="YYYYMMDD"]` (예: `div.tdCal[id="20260916"]`). `#YYYYMMDD` CSS 는 id가 숫자로 시작해 **무효**이므로 사용하지 않음  
+4. **인증단계(캡차)** — `h2.tit.pc_v`(인증단계) 오픈 → 이미지 로드 대기 → 전처리+ddddocr 투표 → `#writekey_mc` JS 주입 → `chkCap_front()` (최대 ~6회, src 쿼리로 새로고침)  
+5. **구역선택** — 캐빈/테라스/파크 라벨 우선순위 **C→T→P**, `(0)` 이면 스킵, 실패 시 C1·T1·P1…  
 6. **결제 UI가 보이면 즉시 중단** (결제 버튼 클릭 안 함)
 
-### 캡차 OCR (한계)
+### 캡차 OCR (한계) — 개인 사용
 
 - 모듈: `src/choansan/captcha.py`  
-- 기본: `ddddocr` 로 로컬 인식 후 입력. 캡차 이미지는 `artifacts/captcha_*.png` 에 저장.  
-- 최대 3회 재시도. 실패 시 이미지를 클릭해 새로고침을 시도한 뒤, **수동 입력 대기**로 전환.  
-- OCR은 **자주 실패**할 수 있습니다. 캡차는 안티봇이며 성공을 보장하지 않습니다.  
+- 기본: 캡차 이미지 스크린샷 → **전처리 변형**(raw/upscale/contrast/threshold/invert)에 `ddddocr` → **투표**(3–5자 영숫자 선호) → `#writekey_mc` **JS 주입**(value + input/change) → `chkCap_front()`.  
+- Playwright `fill` 은 패널이 비가시일 때 실패할 수 있어 JS inject 를 사용합니다.  
+- 최대 **약 6회** 재시도. 새로고침은 `#kcaptcha_image_front` 의 `src` 쿼리 갱신(창닫기/`pop_close` 이미지 클릭 금지).  
+- OCR은 **자주 실패**할 수 있습니다. 실패 시 **수동 입력 대기**로 전환합니다. 캡차는 안티봇이며 성공을 보장하지 않습니다.  
 - 외부 유료/제3자 캡차 솔빙 API는 **사용하지 않습니다** (개인 사용·약관 준수).
 
 수동만 쓰려면:
@@ -156,9 +157,10 @@ https://nowonsc.moonhwain.kr:447/rsvc/rsv_srm.html?b_id=nowonsc
 
 | 단계 | 실측 셀렉터 |
 |------|-------------|
-| 날짜 | `div.tdCal#YYYYMMDD` / `#YYYYMMDD`, title 예약가능 |
-| 캡차 | `#kcaptcha_image_front`, placeholder `문자를 입력해주세요`, 버튼 `다음단계` |
-| 구역 | `캐빈캠핑빌리지`, `테라스캠핑빌리지`, `파크캠핑빌리지`, `피크닉장` |
+| 로그인 | `#m_email`, `#m_pwdTmp`, `input[name=m_pwd]`, `button.b1[onclick*="loginChk"]` / `loginChk()` |
+| 날짜 | `div.tdCal[id="YYYYMMDD"]` ( `#YYYYMMDD` CSS 금지 ), title 예약가능 |
+| 캡차 | `h2.tit.pc_v` 인증단계, `#kcaptcha_image_front`, `#writekey_mc`, `chkCap_front()` |
+| 구역 | `캐빈캠핑빌리지`, `테라스캠핑빌리지`, `파크캠핑빌리지` — C→T→P, `(0)` 스킵 |
 | 로그인 성공 | `로그아웃` 텍스트 |
 
 ## 디렉터리
