@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "choansan-camping-booking"
+version = "0.1.0"
+description = "초안산캠핑장(노원) 자동 예약을 돕는 개인용 Playwright CLI"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "playwright>=1.40.0",
+    "PyYAML>=6.0",
+    "python-dotenv>=1.0.0",
+    "click>=8.1.0",
+]
+
+[project.scripts]
+choansan = "choansan.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
